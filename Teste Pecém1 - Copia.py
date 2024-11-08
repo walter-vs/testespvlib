@@ -22,8 +22,8 @@ inverter = inverter_data.loc['CSI Solar Co - Ltd : CSI-125K-T600GL02-U [600V]']
 module = module_data.loc['Chint New Energy Technology Co. Ltd. CHSM72M(DG)/F-BH-550']
 
 # Configuração do sistema
-modules_per_string = 20
-inverters = 4
+modules_per_string = 35
+inverters = 10
 strings_per_inverter = 10
 system = {'module': module, 'inverter': inverter, 'surface_azimuth': 180, 'surface_tilt': coordinates[0][0]}
 
