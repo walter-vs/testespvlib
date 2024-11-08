@@ -1,0 +1,133 @@
+# Iniciando bibliotecas
+import pandas as pd
+import pvlib
+import numpy as np
+import matplotlib.pyplot as plt
+
+# PRODUÇÃO DE ENERGIA
+# latitude, longitude, name, altitude, timezone
+coordinates = [
+    (-3.519419, -38.956589, 'Siupe', 18, 'Etc/GMT-3'),
+    (-3.57, -38.92, 'Pecem', 30, 'Etc/GMT-3'),
+    (-3.7, -38.5, 'Fortaleza', 8, 'Etc/GMT-3'),
+]
+
+# ESPECIFICAÇÕES DE EQUIPAMENTOS FOTOVOLTAICOS
+
+# Defina os parâmetros do módulo fotovoltaico - Canadian Solar HiKu7 Mono PERC CS7L-605MS
+module_parameters = {
+    'Pmax': 605,  # Potência máxima em W
+    'T_coefficient': -0.34,  # Coeficiente de temperatura da potência (%/°C)
+    'I_sc': 18.52,  # Corrente de curto-circuito em A
+    'V_oc': 41.5,  # Tensão de circuito aberto em V
+    'I_mp': 17.25,  # Corrente no ponto de máxima potência em A
+    'V_mp': 35.1  # Tensão no ponto de máxima potência em V
+}
+
+# Model for a non-native pv module
+module = pvlib.pvsystem.PVSystem(
+    module_parameters=module_parameters
+)
+
+# Inverter parameters - SOLIS S5-GC 60K
+inverter_parameters = {
+    'Pdc': 88850,  # Potência DC (em W)
+    'efficiency': 0.987,  # Eficiência do inversor (98%)
+    'max_power': 90000,  # Potência máxima DC
+}
+
+# Modelo de temperatura do módulo fotovoltaico
+temperature_model_parameters = pvlib.temperature.TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_glass']
+
+# COORDENADAS DO PROJETO
+tmys = []
+
+for location in coordinates:
+    latitude, longitude, name, altitude, timezone = location
+    weather = pvlib.iotools.get_pvgis_tmy(latitude, longitude)[0]  # TMY (Typical Meteorological Year)
+    weather.index.name = "utc_time"
+    tmys.append(weather)
+
+    # Definindo o sistema fotovoltaico com os parâmetros do módulo
+    system = {'module': module,
+              'surface_azimuth': 180}  # Inclinação do sistema é 180°
+
+energies = {}
+
+for location, weather in zip(coordinates, tmys):
+    latitude, longitude, name, altitude, timezone = location
+    system['surface_tilt'] = latitude  # Inclinação do sistema igual à latitude
+    solpos = pvlib.solarposition.get_solarposition(
+        time=weather.index,
+        latitude=latitude,
+        longitude=longitude,
+        altitude=altitude,
+        temperature=weather["temp_air"],
+        pressure=pvlib.atmosphere.alt2pres(altitude),
+    )
+    
+    # Calcular irradiância extra, massas de ar, etc.
+    dni_extra = pvlib.irradiance.get_extra_radiation(weather.index)
+    airmass = pvlib.atmosphere.get_relative_airmass(solpos['apparent_zenith'])
+    pressure = pvlib.atmosphere.alt2pres(altitude)
+    am_abs = pvlib.atmosphere.get_absolute_airmass(airmass, pressure)
+    aoi = pvlib.irradiance.aoi(
+        system['surface_tilt'],
+        system['surface_azimuth'],
+        solpos["apparent_zenith"],
+        solpos["azimuth"],
+    )
+    
+    # Calcular a irradiância total
+    total_irradiance = pvlib.irradiance.get_total_irradiance(
+        system['surface_tilt'],
+        system['surface_azimuth'],
+        solpos['apparent_zenith'],
+        solpos['azimuth'],
+        weather['dni'],
+        weather['ghi'],
+        weather['dhi'],
+        dni_extra=dni_extra,
+        model='haydavies',
+    )
+    
+    # Calcular a temperatura da célula
+    cell_temperature = pvlib.temperature.sapm_cell(
+        total_irradiance['poa_global'],
+        weather["temp_air"],
+        weather["wind_speed"],
+        **temperature_model_parameters,
+    )
+    
+    # Calcular a irradiância efetiva
+    effective_irradiance = pvlib.pvsystem.sapm_effective_irradiance(
+        total_irradiance['poa_direct'],
+        total_irradiance['poa_diffuse'],
+        am_abs,
+        aoi,
+        module,
+    )
+    
+    # Calcular a potência DC
+    dc = pvlib.pvsystem.sapm(effective_irradiance, cell_temperature, module)
+    
+    # Usar a função 'sandia' para inverter a potência DC para AC
+    ac = pvlib.inverter.sandia(dc['v_mp'], dc['p_mp'], inverter_parameters)
+    
+    # Calcular a energia anual
+    annual_energy = ac.sum()
+    energies[name] = annual_energy
+
+# Converter os resultados para uma Série do Pandas
+energies = pd.Series(energies)
+
+# Mostrar os resultados
+print(energies)
+
+# Gerar um gráfico de barras com a produção anual de energia para cada local
+energies.plot(kind='bar', rot=0)
+
+plt.ylabel('Produção anual de energia (Wh)')
+plt.title('Produção Anual de Energia por Localização')
+
+plt.show()
